@@ -456,6 +456,10 @@ Key mechanics worth internalizing:
 - **Conditions on deny rules** use the same CEL subset as allow-policy conditions (4.2 below), commonly keyed off resource tags (e.g., only deny in resources tagged `environment=prod`) so the same rule set can be relaxed in dev/staging without separate policy documents.
 - **Evaluation precedence, restated precisely:** within step 4 of the Module 3 algorithm, if *any* applicable deny rule across the resource and its ancestors covers the principal+permission and is not excepted, the request is denied – **even if the principal holds `roles/owner`.** This is the core value proposition: deny policies are an org's last line of defense against over-granted allow roles, including against humans who accumulated more access than intended over time.
 
+Visualizing IAM Policy evaluation precedence:
+<img alt="IAM Policy evaluation precedence" src="https://github.com/user-attachments/assets/cf50af2a-4211-4f57-b676-f31909779565" />
+
+
 ### 4.2 IAM Conditions: CEL fundamentals
 
 IAM Conditions let a single role binding apply only when a boolean **Common Expression Language (CEL)** expression evaluates true, using a deliberately restricted subset of CEL with a fixed set of context variables populated by Google at evaluation time:
