@@ -229,7 +229,7 @@ Important consequences that engineers routinely get wrong:
 
 ### 1.3 Propagation latency
 
-IAM is a globally distributed system, not a single transactional database. After a `setIamPolicy` call succeeds, the change is **strongly consistent for reads through the IAM API itself**, but **propagation to all the enforcement points across Google's infrastructure (caches in every regional/zonal service backend) is eventually consistent**, with Google's documented guidance being to expect **up to ~7 minutes**, occasionally longer under load, before a policy change is reflected everywhere a permission check happens. Operational implications:
+IAM is a globally distributed system, not a single transactional database. After a `setIamPolicy` call succeeds, the change is **strongly consistent for reads through the IAM API itself**, but **propagation to all the enforcement points across Google's infrastructure (caches in every regional/zonal service backend) is eventually consistent**, with Google's [documented guidance](https://docs.cloud.google.com/iam/docs/access-change-propagation) being to expect **up to ~7 minutes**, occasionally longer under load, before a policy change is reflected everywhere a permission check happens. Operational implications:
 
 - Automation that does `grant role → immediately call API requiring that role` should retry with backoff, not assume instant effect.
 - Revoking access (e.g., during incident response) should not be assumed instantaneous either – pair IAM revocation with key/credential invalidation and, for sensitive cases, disabling the principal outright.
