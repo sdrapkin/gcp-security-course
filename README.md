@@ -46,7 +46,7 @@ Three nouns recur constantly and must not be conflated:
 - **Resource** – "on what": anything in the resource hierarchy, from the Organization node down to an individual Cloud Storage object or Pub/Sub topic.
 
 A **role binding** is a tuple of `(1 specific role, N Principals)`. Each role binding contains exactly 1 role and zero or more members (principals) bound to that role. An example of a role binding is:
-> (**role**: `roles.storage.objectViewer`, **members**: `alice@example.com, bob@example.com`)
+> (**role**: `roles/storage.objectViewer`, **members**: `alice@example.com, bob@example.com`)
 ```
 Binding
 ├── role     (exactly one)
@@ -138,37 +138,36 @@ A sample IAM Deny Policy structure and YAML:
 DenyPolicy
  ├── displayName
  └── rules[]
-       ├── deniedPrincipals[]
-       ├── deniedPermissions[]
-       ├── denialCondition (CEL expression)
-       └── exceptions[]
+       ├── description
+       └── denyRule
+             ├── deniedPrincipals[]
+             ├── exceptionPrincipals[]
+             ├── deniedPermissions[] ← IAM v2 format: SERVICE_FQDN/RESOURCE.ACTION
+             └── denialCondition (CEL expression)
  ```
  ```YAML
  displayName: "Deny deletion of production GCS objects"
 rules:
   - description: "Block object deletion in production bucket"
-    deniedPrincipals:
-      - principalSet://goog/public:all
-
-    deniedPermissions:
-      - "storage.objects.delete"
-
-    denialCondition:
-      title: "Protect production prefix"
-      expression: "resource.name.startsWith('projects/_/buckets/prod-bucket/objects/')"
-
-    exceptions:
-      - "principalSet://goog/group/storage-admins@example.com"
+    denyRule:
+      deniedPrincipals:
+        - principalSet://goog/public:all
+      exceptionPrincipals:
+        - principalSet://goog/group/storage-admins@example.com
+      deniedPermissions:
+        - "storage.googleapis.com/objects.delete"
+      denialCondition:
+        title: "Protect production prefix"
+        expression: "resource.name.startsWith('projects/_/buckets/prod-bucket/objects/')"
 
   - description: "Prevent accidental bucket deletion"
-    deniedPrincipals:
-      - principalSet://goog/public:all
-
-    deniedPermissions:
-      - "storage.buckets.delete"
-
-    exceptions:
-      - "principalSet://goog/group/org-admins@example.com"
+    denyRule:
+      deniedPrincipals:
+        - principalSet://goog/public:all
+      exceptionPrincipals:
+        - principalSet://goog/group/org-admins@example.com
+      deniedPermissions:
+        - "storage.googleapis.com/buckets.delete"
  ```
 
 Deny IAM Policy Principals are expressed as "principal sets":
@@ -759,7 +758,16 @@ A service account supports a limited number of concurrently active user-managed 
 
 ### 7.5 The "Asset Key Thief" case study (a real, disclosed Google Cloud vulnerability)
 
-In 2023, security researchers publicly disclosed a privilege-escalation technique, since remediated by Google, in which a principal holding only the **Cloud Asset Viewer** role (or any role containing the underlying `cloudasset.assets.searchAllResources` permission) at a project, folder, or organization scope could, under specific conditions, retrieve the **private key material of Google-managed service account keys** through the Cloud Asset Inventory API's resource-search responses – turning what looked like a harmless read-only inventory/auditing permission into a path to fully impersonating other service accounts. The case is instructive for two reasons beyond the specific (now-patched) bug: first, it demonstrates that **"read-only" and "low-risk" are not synonyms** – a permission that exposes structured metadata about your environment can expose far more than its name implies, depending on exactly what fields a service returns; second, organizations practicing **frequent key rotation** were, counter-intuitively, more exposed during the vulnerability window, because more recently-created key material was retrievable through the affected code path – a reminder that mitigations (rotation) designed for one threat model (long-lived key compromise) don't automatically help against every threat model, and reinforces why **eliminating keys entirely**, rather than rotating them faster, is the durable fix.
+In 2023, security researchers publicly [disclosed](https://engineering.sada.com/asset-key-thief-disclosure-cfae4f1778b6) a privilege-escalation technique, since remediated by Google, in which a principal holding only the **Cloud Asset Viewer** role (or any role containing the underlying `cloudasset.assets.searchAllResources` permission) at a project, folder, or organization scope could, under specific conditions, retrieve the **private key material of user-managed service account keys** through the Cloud Asset Inventory API's resource-search responses.
+
+The affected keys were specifically those created via `CreateServiceAccountKey` where Google generated the private key material on the customer's behalf – not keys where the customer uploaded their own public key. Crucially, the retrieval window was bounded: only keys created or rotated within the prior 12–24 hours were accessible through the vulnerable code path.
+ What looked like a harmless read-only inventory/auditing permission became a path to fully impersonating other service accounts.
+ 
+ The case is instructive for two reasons beyond the specific (now-patched) bug:
+ 
+ First, it demonstrates that **"read-only" and "low-risk" are not synonyms** – a permission that exposes structured metadata about your environment can expose far more than its name implies, depending on exactly what fields a service returns.
+ 
+ Second, organizations practicing **frequent key rotation** were, counter-intuitively, more exposed during the vulnerability window, because more recently-created key material was retrievable through the affected code path – a reminder that mitigations (rotation) designed for one threat model (long-lived key compromise) don't automatically help against every threat model, and reinforces why **eliminating keys entirely**, rather than rotating them faster, is the durable fix.
 
 ---
 
@@ -926,7 +934,7 @@ GKE Workload Identity binds a **Kubernetes Service Account (KSA)** – a Kuberne
 
 Mechanics:
 
-1. Each GKE cluster with Workload Identity enabled is assigned a **workload identity pool** (WIP) automatically, named `PROJECT_ID.svc.id.goog`.
+1. Each GKE cluster with Workload Identity enabled shares a per-project **workload identity pool** (WIP) automatically, named `PROJECT_ID.svc.id.goog`.
 2. Every KSA in the cluster has an implicit identity within that pool, expressed as the subject `serviceaccount:PROJECT_ID.svc.id.goog[NAMESPACE/KSA_NAME]`.
 3. You bind the GSA (as a resource) to allow that specific KSA subject to impersonate it, using `roles/iam.workloadIdentityUser`:
 
@@ -1022,7 +1030,7 @@ Treat the attribute condition with the same rigor as a deny-policy rule (Module 
 | | GKE Workload Identity | External WIF |
 |---|---|---|
 | Identity source | Kubernetes Service Account, internal to one GKE cluster | Any external OIDC/SAML IdP (GitHub, GitLab, AWS, Azure, on-prem) |
-| Setup unit | Pool auto-created per cluster (`PROJECT_ID.svc.id.goog`) | Pool + Provider you create explicitly, can serve many external systems |
+| Setup unit | Pool auto-created per project (`PROJECT_ID.svc.id.goog`), not per cluster | Pool + Provider you create explicitly, can serve many external systems |
 | Typical use | Microservices running inside GKE calling GCP APIs | CI/CD runners, workloads on other clouds, on-prem systems, partner integrations |
 | Underlying mechanism | Same STS/RFC 8693 token exchange | Same STS/RFC 8693 token exchange |
 
@@ -1240,7 +1248,7 @@ The load-bearing decision here: **3 separate identities** (ingest, transform, an
 
 **The "Asset Key Thief" vulnerability (2023, Google Cloud, publicly disclosed and remediated)** – already detailed in Module 7.5. The teaching point repeated here for emphasis: a permission that looked purely observational (`cloudasset.assets.searchAllResources`, bundled in the Cloud Asset Viewer role) turned out to be a path to retrieving private key material for other service accounts under specific conditions, illustrating that **permission risk classification must be re-derived from what a service actually returns, not inferred from a role's name** – "Viewer" roles are not a synonym for "safe."
 
-**Service account key committed to a public GitHub repository (documented public postmortem, UC Berkeley DataHub project, 2019)** – a routine documentation pull request inadvertently included a live service account key with access to the project's Kubernetes clusters and container registry. The organization's own published timeline is notable for what went *right*: Google's automated leaked-credential scanning detected and notified the team **within seconds** of the push, the keys were revoked within roughly 20 minutes of the initial commit, and a full check confirmed no automated credential-scraping bots had exploited the window before revocation. This case is worth studying specifically because it is a **near-miss with a fast, competent response**, not a catastrophic breach – and the team's own action items afterward (stop duplicating key credentials across configurations; move to a different secrets-management strategy entirely) are exactly the Module 7/12 guidance: the root fix wasn't *"rotate faster,"* it was *"stop having a static key in a place it could be committed at all."*
+**Service account key committed to a public GitHub repository ([documented](https://docs.datahub.berkeley.edu/incidents/2019-05-01-service-account-leak.html) public postmortem, UC Berkeley DataHub project, 2019)** – a routine documentation pull request inadvertently included a live service account key with access to the project's Kubernetes clusters and container registry. The organization's own published timeline is notable for what went *right*: Google's automated leaked-credential scanning detected and notified the team **within seconds** of the push, the keys were revoked within roughly 9 minutes of the initial commit, and a full check confirmed no automated credential-scraping bots had exploited the window before revocation. This case is worth studying specifically because it is a **near-miss with a fast, competent response**, not a catastrophic breach – and the team's own action items afterward (stop duplicating key credentials across configurations; move to a different secrets-management strategy entirely) are exactly the Module 7/12 guidance: the root fix wasn't *"rotate faster,"* it was *"stop having a static key in a place it could be committed at all."*
 
 **Stolen service-account tokens enabling lateral movement into production systems (documented in Google's own 2026 Cloud Threat Horizons threat-intelligence reporting, Mandiant-investigated intrusions)** – Google's published threat intelligence has detailed real intrusions in which attackers, having gained an initial foothold, specifically targeted **service account tokens** (rather than human credentials) as the mechanism for lateral movement into sensitive production infrastructure, in some cases reaching workloads running in privileged modes and extending into systems handling identity and financial operations. The pattern documented across these intrusions is consistent with the Module 11.4 escalation chains: an attacker's initial access is rarely the most privileged identity in the environment, and the actual damage tends to come from **finding and using a service account that was more privileged than the entry point**, which is precisely why the controls in Modules 8 and 11 (minimal `serviceAccountUser`/`tokenCreator` grants, delegation-chain logging, anomalous-impersonation detection) exist as a distinct defensive layer from "just secure the perimeter."
 
