@@ -18,6 +18,7 @@
 
 | # | Module | Level | Time |
 |---|--------|-------|------|
+| 0 | IAM Orientation | Beginner | 1h |
 | 1 | IAM Resource Hierarchy & Mental Model | Beginner | 1.5h |
 | 2 | Roles: Basic, Predefined, Custom | Beginner | 2h |
 | 3 | Policy Structure & Evaluation Logic | Beginner/Intermediate | 2.5h |
@@ -42,10 +43,10 @@ Before any syntax, internalize one sentence: **GCP IAM answers exactly one quest
 Three nouns recur constantly and must not be conflated:
 
 - **Principal** – "who": a Google Account (human), a Google group, a service account, a Workspace/Cloud Identity domain, or (with Workload Identity Federation) an external federated identity. Principals are *who is asking*.
-- **Permission** – "what action": a fine-grained string like `compute.instances.delete` or `bigquery.tables.getData`. Permissions are never granted directly to principals – they are bundled into **roles**. A GCP role is a named set of permissions that determines what actions a Principal (a user, group, or service account) can perform on GCP resources.
+- **Permission** – "what action": a fine-grained string like `compute.instances.delete` or `bigquery.tables.getData`. Permissions are never granted directly to principals – they are bundled into **roles**. A GCP **role** is a named set of permissions that determines what actions a Principal (a user, group, or service account) can perform on GCP resources.
 - **Resource** – "on what": anything in the resource hierarchy, from the Organization node down to an individual Cloud Storage object or Pub/Sub topic.
 
-A **role binding** is a tuple of `(1 specific role, N Principals)`. Each role binding contains exactly 1 role and zero or more members (principals) bound to that role. An example of a role binding is:
+A **Role Binding** is a tuple of `(1 specific role, N Principals)`. Each Role Binding contains exactly 1 role and zero or more members (principals) bound to that role. An example of a Role Binding is:
 > (**role**: `roles/storage.objectViewer`, **members**: `alice@example.com, bob@example.com`)
 ```
 Binding
@@ -190,6 +191,7 @@ THEN ALLOW
 
 ELSE DENY
 ```
+> Note: this omits [Principal Access Boundary](https://docs.cloud.google.com/iam/docs/principal-access-boundary-policies) (PAB) policies, covered in full in §3.2
 
 ---
 
@@ -217,7 +219,7 @@ Organization (organizations/123456789)
 
 The informal phrase "permissions flow downhill" is true but underspecified. The precise rule:
 
-> The **effective allow policy** on any resource R is the **union (logical OR)** of every role binding in the allow policy attached directly to R, plus every role binding in the allow policy attached to every ancestor of R, all the way up to the Organization node.
+> The **effective allow policy** on any resource R is the **union (logical OR)** of every Role Binding in the allow policy attached directly to R, plus every role binding in the allow policy attached to every ancestor of R, all the way up to the Organization node.
 
 Important consequences that engineers routinely get wrong:
 
@@ -606,7 +608,7 @@ This is the module where the concept of "service accounts" stops being an IAM ab
 - **OIDC identity token (ID token)** – a signed JWT (not opaque) asserting *who the caller is* to a relying party, carrying an `aud` (audience) claim identifying the specific service it's meant for (e.g., a specific Cloud Run service URL). Used when **authenticating to another service** rather than calling a Google API that expects OAuth2 – the canonical example is service-to-service calls on Cloud Run/Cloud Functions, where the receiving service validates the caller's identity by checking the ID token's signature and audience, not by checking OAuth scopes.
 
 **Rule of thumb:**
-* calling a Google Cloud API → OAuth2 access token.
+* Calling a Google Cloud API → OAuth2 access token.
 * Authenticating to a custom HTTP service (including another of your own Cloud Run services) → ID token.
 
 ### 6.2 Mechanism 1: Attached identity via the metadata server (the common "keyless" path)
@@ -821,7 +823,7 @@ gcloud compute instances list \
   --delegate-chain=delegate-sa-B@proj.iam.gserviceaccount.com
 ```
 
-Chain length is bounded (a small fixed maximum hop count enforced by the API) precisely to keep audit trails reasoned-about-able and to prevent unbounded indirection from being used to obscure provenance.
+Chain length is bounded (a small fixed maximum hop count enforced by the API) precisely to keep audit trails easy to reason about, and to prevent unbounded indirection from being used to obscure provenance.
 
 ### 8.5 Local development without ever touching a key
 
@@ -890,7 +892,7 @@ Shared VPC architectures (a **"host"** project owning the network, **"service"**
 When the external party is in a **different GCP Organization** entirely (a partner company, an acquired entity not yet merged into your org, a vendor), you have 3 realistic options, ordered by preference:
 
 1. **Workload Identity Federation** (Module 10) – the partner's own workload identity (their own cloud's identity, or an OIDC token they control) is federated directly; no SA or credential of yours is ever shared with them. Strongly preferred when the partner's workload can produce a usable OIDC/SAML assertion.
-2. **A dedicated SA in your project, with `serviceAccountTokenCreator` granted to a principal the partner controls** (most cleanly, a federated identity as preceeding option-1, or, less ideally, a Google Group containing specific named individuals at the partner if no federation is feasible) – the partner impersonates short-lived credentials rather than ever holding a static key of yours.
+2. **A dedicated SA in your project, with `serviceAccountTokenCreator` granted to a principal the partner controls** (most cleanly, a federated identity as preceding WIF/option-1, or, less ideally, a Google Group containing specific named individuals at the partner if no federation is feasible) – the partner impersonates short-lived credentials rather than ever holding a static key of yours.
 3. **A JSON key handed to the partner** – last resort, only when the partner's tooling has no support for either of the above, and should come with the full Module 7.3 mitigations (narrowest possible role, max key age enforced, usage-anomaly alerting) plus a contractual/operational expectation of immediate revocation if the relationship ends.
 
 ### 9.5 `gcloud`: auditing who can reach across a boundary
@@ -930,9 +932,21 @@ Both mechanisms in this module rest on the same primitive: Google's **Security T
 
 ### 10.2 GKE Workload Identity (cluster-internal)
 
+GKE Workload Identity bridges the gap between **Kubernetes-native** security and **Google Cloud IAM**. It eliminates the need for legacy, high-risk static `JSON` service account keys by letting cluster workloads securely adopt a specific Google Cloud identity.
+
 GKE Workload Identity binds a **Kubernetes Service Account (KSA)** – a Kubernetes-native, namespace-scoped identity object, unrelated to Google IAM by itself – to a **Google Service Account (GSA)**, so that pods running as a given KSA automatically receive GSA credentials with zero key material anywhere in the cluster.
 
-Mechanics:
+The architectural identity flow works as follows:
+```
+[ Pod ] ──► [ KSA ] ──► [ Workload Identity Principal ] ──► [ GSA ] ──► [ GCP Resource ]
+```
+1. The Pod runs under a designated Kubernetes Service Account (**KSA**), which is its identity within the cluster.
+2. The KSA has been pre-authorized to impersonate a specific GSA via `roles/iam.workloadIdentityUser` granted *on the GSA* to the KSA's Workload Identity pool subject.
+3. At runtime, the GKE Workload Identity agent exchanges the pod's Kubernetes-issued OIDC token for a short-lived Google OAuth2 access token via the Security Token Service (STS, RFC 8693). This exchange happens transparently to application code, which simply calls the standard metadata-server endpoint (Module 6.2).
+4. The pod now holds a short-lived credential representing the GSA's identity, with no key material ever existing on disk or in any environment variable.
+5. When the pod calls a GCP API, the target resource evaluates the GSA's IAM role bindings (e.g., a `roles/storage.objectViewer` binding scoped to a specific bucket) and grants or denies access accordingly.
+
+**Mechanics:**
 
 1. Each GKE cluster with Workload Identity enabled shares a per-project **workload identity pool** (WIP) automatically, named `PROJECT_ID.svc.id.goog`.
 2. Every KSA in the cluster has an implicit identity within that pool, expressed as the subject `serviceaccount:PROJECT_ID.svc.id.goog[NAMESPACE/KSA_NAME]`.
@@ -953,15 +967,34 @@ kubectl annotate serviceaccount payments-ksa \
   iam.gke.io/gcp-service-account=payments-backend-gsa@my-project-id.iam.gserviceaccount.com
 ```
 
+```yaml
+# equivalent YAML:
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: payments-ksa
+  namespace: payments
+  annotations:
+    # Specifies the target GSA identity for token impersonation
+    iam.gke.io/gcp-service-account: "payments-backend-gsa@my-project-id.iam.gserviceaccount.com"
+```
+
 5. At runtime, a pod using `payments-ksa` calls the metadata-server-equivalent endpoint exposed by the GKE Workload Identity webhook/agent injected into the pod's network namespace. That component holds the pod's Kubernetes-issued, cluster-internal **OIDC token** (the KSA's projected service account token, itself a JWT signed by the cluster's own OIDC issuer), and exchanges it via STS for a Google access token scoped to the bound GSA – this exchange is exactly RFC 8693 token exchange, with the Kubernetes JWT as the "subject token" and the GSA's federated representation as the result. The application code calls the standard metadata-server URL (Module 6.2) and is unaware any exchange happened – this is intentional, so existing Google client libraries work unmodified.
 
 The net effect: **one GKE cluster can run many microservices, each with its own least-privilege GSA, none of them holding or ever seeing a key**, simply by giving each microservice's pods a distinct KSA mapped to a distinct GSA.
 
 >Note that WIP is scoped to the **GCP Project** (not a single GKE cluster), so any GKE clusters you create within the *same* project will share the *same* WIP.
 
-This means that if you have 2 different GKE clusters in the same project – `cluster-a` and  `cluster-b` – and both clusters have a namespace named `production` with a KSA named `frontend-manager`, they will be treated as the exact same identity by Google Cloud IAM. If you need to isolate permissions between clusters, you must either:
-* Use different GCP projects for each GKE cluster.
-* Use IAM Conditions to restrict access based on attributes like the cluster name or namespace.
+This means that if you have 2 different GKE clusters in the same project – `cluster-a` and  `cluster-b` – and both clusters have a namespace named `backend` with a KSA named `back-ksa`, they will be treated as the exact same identity by Google Cloud IAM.
+
+This is not a bug or security oversight, but a feature called "[Identity Sameness](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/workload-identity#identity_sameness)". Identity Sameness allows the same Workload Identities to be reused across multi-cluster deployments of the same workloads (in trusted/single-tenant clusters) – e.g. multi-region clusters. In the below diagram, `back-ksa` and its corresponding Workload-Identity-pool principal are reused/shared by both clusters. The database-enabled GSA which allows its impersonation by the linked WI-principal should be reused/shared as well.
+![Workload Identity Sameness](https://docs.cloud.google.com/static/kubernetes-engine/images/identity-sameness-workload-identity.svg)
+
+If you need to isolate permissions between clusters with distinct lifecycles and trust levels (e.g. `dev` and `prod`), you have options:
+* Use different GCP projects for each GKE cluster (safest)
+* Use distinct namespace names (e.g. `dev-namespace` vs `prod-namespace`)
+* Use distinct KSA names (e.g. `dev-app-ksa` vs `prod-app-ksa`)
+* Use IAM Conditions to restrict access based on attributes like the cluster name
 
 ### 10.3 External Workload Identity Federation (non-GKE: AWS, Azure, on-prem, CI/CD)
 
@@ -1215,7 +1248,7 @@ ci-deployer-gsa token, scoped to:
 Note the layered narrowing at every hop:
 * the attribute condition restricts *which workflow runs* can federate at all
 * the GSA's own role bindings restrict *what the deploy can touch*
-* the `serviceAccountUser`-not-`tokenCreator` distinction (13.1) restricts the deployer to *launching* the runtime identity rather than *becoming* it.
+* the `serviceAccountUser`-not-`tokenCreator` distinction (§8.3, applied in §13.1) restricts the deployer to *launching* the runtime identity rather than *becoming* it.
 
 A leaked or maliciously-modified workflow file on a feature branch (not `main`) cannot federate at all, because the attribute condition excludes it – this is the practical payoff of Module 10.4's emphasis on precise attribute conditions.
 
@@ -1230,7 +1263,7 @@ Dataflow job (runs as dataflow-ingest-gsa, attached identity, no key)
    ▼
 BigQuery dataset: raw_events
    │  scheduled query / dbt job (runs as transform-gsa, separate identity from ingest)
-   │  transform-gsa: bigquery.dataEditor on "raw_events" (read) AND "curated" (write)
+   │  transform-gsa: bigquery.dataViewer on "raw_events" (read) AND bigquery.dataEditor on "curated" (write)
    ▼
 BigQuery dataset: curated
    │  analyst access: human analysts in IAM Group "analysts@example.com"
