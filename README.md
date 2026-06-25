@@ -213,7 +213,7 @@ Organization (organizations/123456789)
 - **Organization** – the root node, normally tied to a Cloud Identity or Google Workspace domain. Created once per company (or business unit, in some designs). If you don't have an Organization, your projects are "orphan" projects floating with no common ancestor – common in personal accounts or early-stage startups, and a frequent source of governance pain later, because there is no single node to attach an org-wide allow or deny policy to.
 - **Folder** – an optional grouping node used to mirror business structure: business units, environments (`prod`/`staging`/`dev`), or compliance boundaries. Folders can nest arbitrarily deep (practical hierarchies are rarely more than 3–4 levels). Folders exist almost entirely to be a unit of **policy and Org Policy application** – a way to say *"everything under `folder/prod` inherits these guardrails"* without repeating bindings on every project.
 - **Project** – the primary unit of billing, quota, API enablement, and resource ownership. Nearly all resources (VMs, buckets, service accounts, BigQuery datasets) live inside exactly one project.
-- **Resource** – the leaf level: individual GCP objects. Critically, *not all resource types support IAM policies directly* – many services only support policy attachment at the project level and inherit from there (e.g., classic Compute Engine instances do not have their own IAM policy; the *service account attached to* a VM does, and so does the project). Others – Cloud Storage buckets, BigQuery datasets/tables, Pub/Sub topics, KMS keys, individual Service Accounts – support **resource-level IAM policies** of their own.
+- **Resource** – the leaf level: individual GCP objects. Critically, *not all resource types support IAM policies directly*. Many primary resources support resource-level IAM policies, allowing you to grant access to that specific item alone (ex. GCE VM instances and disks, GCS buckets, BigQuery datasets, Pub/Sub topics, and individual Service Accounts). However, more granular sub-resources or specific service components do not support direct IAM policies (e.g. individual Secret Manager versions, files/objects in GCS, or databases within a Cloud SQL/AlloyDB instance). For these, permissions are inherited from a higher level (its parent resource or the Project).
 
 ### 1.2 Inheritance: precise mechanics, not folklore
 
@@ -411,7 +411,7 @@ The Policy Troubleshooter output explicitly walks the same algorithm above – l
 - **Forgetting `allAuthenticatedUsers` means "any Google account on Earth," not "any account in my org."** Several public data-exposure incidents have stemmed from this exact misunderstanding on Cloud Storage buckets.
 - **Treating `roles/editor` as a safe default "just to get unblocked."** It nearly always over-grants relative to actual need, and because basic roles predate fine-grained permissions, their exact boundary is harder to reason about than a predefined or custom role.
 - **Not requesting policy version 3 in automation**, causing conditional bindings to silently disappear from API responses or fail to apply on write.
-- **Assuming resource-level deny on a bucket overrides a project-level allow** without checking the deny policy actually targets the right resource scope and permission set – deny policies use **IAM v2 permission identifiers** (`SERVICE_FQDN/RESOURCE.ACTION`, e.g. `storage.googleapis.com/objects.create`), a different string format from v1 role-binding permissions (`storage.objects.create`), and not every permission is deny-policy-eligible (Module 4 covers this).
+- **Assuming resource-level deny on a bucket overrides a project-level allow** without checking the deny policy actually targets the right resource scope and permission set – deny policies use **IAM v2 permission identifiers** (`SERVICE_FQDN/RESOURCE.ACTION`, e.g. `storage.googleapis.com/objects.create`), a different string format from v1 role-binding permissions (`storage.objects.create`).<br>**Also remember:** deny policies are not a general data-plane ACL tool and only support a limited, [Google-published subset](https://docs.cloud.google.com/iam/docs/deny-permissions-support) of permissions.
 
 ---
 
@@ -419,6 +419,12 @@ The Policy Troubleshooter output explicitly walks the same algorithm above – l
 
 * **Learning objectives:** Write correct deny policies including exceptions; write and debug CEL condition expressions; know which attributes are available at evaluation time; understand the limits of both mechanisms.
 * **Prerequisites:** Module 3.
+
+### 4.0 CEL – Common Expression Language, briefly
+
+**[Common Expression Language](https://docs.cloud.google.com/iam/docs/conditions-overview) (CEL)** is a small, fast, safe expression language defined by Google and standardized in the CEL spec. This course uses a deliberately restricted subset of CEL to write boolean condition expressions that gate whether a role binding (either `allow` or `deny`) applies at evaluation time. A CEL expression evaluates to `true` or `false`, with access to a fixed set of context variables (`request.time`, `resource.name`, `resource.matchTag()`, etc.) that Google populates at the moment of an access check. CEL expressions are **stateless and per-request** – they cannot access data from prior requests, perform network calls, or carry multi-request state. You'll encounter CEL in two places in this module: conditions on `deny` rules (section 4.1), and conditions on `allow`-policy bindings (section 4.2).
+
+For a complete reference of all available CEL attributes and functions usable in IAM conditions, see [IAM Conditions Attribute Reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference).
 
 ### 4.1 Deny policies – structure
 
@@ -501,6 +507,9 @@ gcloud projects add-iam-policy-binding my-project-id \
 ### 4.3 What conditions cannot do
 
 Conditions only gate **whether a binding applies**; they cannot express things like rate limiting, multi-factor confirmation, or cross-request state (CEL evaluation here is stateless and per-request). They also cannot be used to *broaden* access beyond what the role already grants – a condition is purely a restrictor on an existing binding, never an additive mechanism. And critically: **a condition on an allow binding only narrows that one binding** – it does nothing to other unconditional bindings elsewhere in the hierarchy that might grant the same permission without restriction. If you intend a hard boundary, you usually want it expressed as (or backed by) a **deny policy**, not solely as a condition on one allow binding, precisely because allow-policy union semantics mean any other unconditional grant elsewhere wins.
+
+> ⚠️ 
+> Always verify the **[service-specific IAM Conditions support](https://docs.cloud.google.com/iam/docs/resource-types-with-conditional-roles)**. Not every GCP service or resource type supports conditions on all role bindings. Applying a condition to an unsupported resource type can result in the condition being **silently dropped**, granting unconditional access – a critical security failure that audit logs may not clearly surface. Before deploying conditional bindings to production, verify your target service is listed and test the condition in a staging environment to confirm it's being enforced as intended.
 
 ### 4.4 Common pitfalls
 
@@ -613,14 +622,17 @@ This is the module where the concept of "service accounts" stops being an IAM ab
 
 ### 6.2 Mechanism 1: Attached identity via the metadata server (the common "keyless" path)
 
-When a service account is *attached* to a compute resource (GCE VM, GKE node/pod via Workload Identity, Cloud Run service, Cloud Function, Cloud Build job, App Engine), the runtime environment exposes a **metadata server** reachable only from inside that environment at the link-local address `http://169.254.169.254` (alias `metadata.google.internal`). The application HTTP-calls:
+When a service account is *attached* to a compute resource (GCE VM, GKE node/pod via Workload Identity, Cloud Run service, Cloud Function, Cloud Build job, App Engine), the runtime environment exposes a **metadata server** reachable only from inside that environment at the link-local address `http://169.254.169.254` (alias `metadata.google.internal`).
 
-```
-GET http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
-Header: Metadata-Flavor: Google
+An explicit header `Metadata-Flavor: Google` is mandatory for all requests to prevent Server-Side Request Forgery (SSRF) vulnerabilities. The metadata server returns a short-lived access token directly to the running compute instance, completely eliminating the risk of a hardcoded credential leak.
+
+```bash
+# How the SDK/Client libraries fetch an OAuth2 access token under the hood:
+curl -H "Metadata-Flavor: Google" \
+  "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
 ```
 
-and receives back a JSON payload containing a short-lived OAuth2 access token. **No private key ever exists on the machine, in any file, in any environment variable.** Internally, Google's infrastructure brokers this: the metadata server is itself authenticated to a backend identity-issuance system as "I am instance/pod X, which is configured to run as SA Y," and that backend mints a token signed with **Google-held private keys that you never see and cannot export**, scoped to the SA's actual permissions. This is why attached-identity usage is described as fully "keyless" – the asymmetric key material backing the cryptographic trust never leaves Google's control plane at all.
+The Metadata Server returns a `JSON` payload containing a short-lived OAuth2 access token. **No private key ever exists on the machine, in any file, in any environment variable.** Internally, Google's infrastructure brokers this: the metadata server is itself authenticated to a backend identity-issuance system as "I am instance/pod X, which is configured to run as SA Y," and that backend mints a token signed with **Google-held private keys that you never see and cannot export**, scoped to the SA's actual permissions. This is why attached-identity usage is described as fully "keyless" – the asymmetric key material backing the cryptographic trust never leaves Google's control plane at all.
 
 For ID tokens (for service-to-service auth), the equivalent call is:
 
@@ -1079,15 +1091,25 @@ They are the same underlying machinery aimed at two different identity-source sh
 ### 11.1 Cloud Audit Logs – the 2 log streams that matter
 
 - **Admin Activity audit logs** – every API call that **modifies configuration or metadata**, including every `setIamPolicy` call, every `CreateServiceAccount`/`DeleteServiceAccount`, every `CreateServiceAccountKey`/`DeleteServiceAccountKey`. **Always enabled, cannot be disabled, and retained for 400 days** – this is a hard platform guarantee, not a configurable setting, which makes it the bedrock of any IAM forensic timeline.
-- **Data Access audit logs** – calls that **read configuration/metadata or read/write user data**, including, critically, calls to `iamcredentials.googleapis.com` (`GenerateAccessToken`, `GenerateIdToken`, `SignBlob`, `SignJwt`) – i.e., **every impersonation event**. Unlike Admin Activity, Data Access logs for many services are **not on by default** and must be explicitly enabled (and can carry meaningful log volume/cost at scale) – meaning a very common and consequential gap in real environments is: *IAM policy changes are always logged, but actual use of impersonation may not be, unless Data Access logging was deliberately turned on.* Confirming this is enabled for `iamcredentials.googleapis.com` (and ideally for the resource types you most care about – Cloud Storage, BigQuery) should be a day-1 checklist item, not an afterthought discovered during an incident.
+- **Data Access audit logs** – calls that **read configuration/metadata or read/write user data**, including, critically, calls to `iamcredentials.googleapis.com` (`GenerateAccessToken`, `GenerateIdToken`, `SignBlob`, `SignJwt`) – i.e., **every impersonation event**. Unlike Admin Activity, Data Access logs for many services are **not on by default** and must be explicitly enabled (and can carry meaningful log volume/cost at scale) – meaning a very common and consequential gap in real environments is: *IAM policy changes are always logged, but actual use of impersonation may not be, unless Data Access logging was deliberately turned on.* Confirming this is enabled for `iamcredentials.googleapis.com` (and ideally for the resource types you most care about – Cloud Storage, BigQuery) should be a day-1 checklist item, not an afterthought discovered during an incident.<br><br>
+Data Access audit logs cannot be configured via logging settings flags; they are managed entirely within the IAM policy hierarchy. To enable them programmatically via `gcloud`, you must fetch the resource's IAM policy, append the `auditConfigs` block, and write the policy back.
 
 ```bash
-# Enable Data Access audit logs at the org level (illustrative; exact mechanism is via
-# the Cloud Logging / Access Transparency configuration surfaces, not a single gcloud flag
-# for every service – verify current configuration UI/Terraform resource for your services)
-gcloud logging settings update --organization=123456789012 \
-  --data-access-logging=true   # representative; consult current docs per-service
+# 1. Fetch the existing organization-level IAM policy
+gcloud organizations get-iam-policy 123456789012 --format=yaml > org_policy.yaml
+
+# 2. Append the target auditConfigs block to the policy file (see schema below)
+# 3. Apply the updated IAM policy back to the organization
+gcloud organizations set-iam-policy 123456789012 org_policy.yaml
 ```
+```yaml
+auditConfigs:
+- auditLogConfigs:
+  - logType: DATA_READ
+  - logType: DATA_WRITE
+  service: iamcredentials.googleapis.com
+```
+**Tip:** To blanket-enable Data Access logging across every service within the organization rather than targeting them individually, change the service value to `allServices`. For production environments, managing this block via Terraform's `google_organization_iam_audit_config` resource is heavily recommended over manual `gcloud` manipulation.
 
 ### 11.2 Log-search Queries to have ready before an incident, not during one
 
@@ -1130,6 +1152,16 @@ These are well-documented, repeatedly-rediscovered patterns (the most cited orig
 6. **`iam.roles.update` (custom role editing) on a role currently bound to a privileged scope** → quietly add permissions to a custom role you can already touch, which immediately grants those permissions to **everyone already bound to that role**, including the attacker, without ever creating a new binding (a stealthier variant, because the binding list itself never changes – only an audit of `SetIamPolicy` is insufficient here; you also need to watch `google.iam.admin.v1.CreateRole`/`UpdateRole` events).
 
 The remediation principle behind all these privilege-escalation threats: **never co-locate *"permission to attach/mint-as a SA"* with *"permission to manage that SA's own privilege level"* in a single principal**, and treat any combination of *"can manage compute/serverless deploy surface"* + *"can act as a privileged SA"* as equivalent in risk to granting that privilege level directly – because, functionally, it is.
+
+**Privilege Escalation Summary:**
+| IAM Permission | Secondary Target Requirement | Ultimate Impact |
+| :--- | :--- | :--- |
+| `iam.serviceAccounts.createKey` | Target Privileged GSA | Direct credential exfiltration |
+| `iam.serviceAccounts.getAccessToken` | Target Privileged GSA | Direct token minting (Impersonation) |
+| `compute.instances.create` + `iam.serviceAccounts.actAs` | Target Privileged GSA | VM metadata token extraction |
+| `cloudfunctions.functions.create` + `iam.serviceAccounts.actAs` | Target Privileged GSA | Code-execution token extraction |
+| `cloudbuild.builds.create` + `iam.serviceAccounts.actAs` | Cloud Build Runtime GSA | Pipeline-execution token extraction |
+| `iam.roles.update` | Attached Custom Role | Stealthy, cross-binding privilege inflation |
 
 ### 11.5 Finding these before an attacker does: Policy Analyzer and IAM Recommender
 
