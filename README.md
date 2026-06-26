@@ -748,6 +748,18 @@ Some integration patterns – typically third-party SaaS products that only supp
 
 - **Scope the SA's role bindings to the absolute minimum** the third party needs, on the narrowest resource possible (a single bucket, a single dataset) – never project-level `editor`/`owner`.
 - **Set an organization policy enforcing maximum key age** so any key, once issued, becomes unusable after a bounded period even if nobody manually rotates it – this is a critical defense-in-depth control because manual rotation discipline reliably degrades over time across an organization.
+```yaml
+# key-expiry-policy.yaml
+nname: organizations/YOUR_ORG_ID/policies/iam.serviceAccountKeyExpiryHours
+spec:
+  rules:
+  - values:
+      allowedValues:
+      - 720h # (30 days)
+```
+```bash
+gcloud org-policies set-policy key-expiry-policy.yaml
+```
 - **Store the key only in a secrets manager** (Module 12) with access logging, never in source control, CI YAML, container images, or shared drives – and treat "key checked into git" as a sev-1 incident requiring immediate revocation, not a cleanup task.
 - **Alert on key usage from unexpected IP ranges/ASNs** via Cloud Audit Logs (Module 11) – a key that's supposed to be used only from one SaaS vendor's documented egress ranges showing activity elsewhere is a strong compromise signal.
 - **Treat every key as eventually compromised** in your threat model – the question is not "could this leak" but "when it leaks, what's the blast radius, and how fast do we detect it."
@@ -898,6 +910,23 @@ Multiple producer projects, one consumer (analytics) project:
 ### 9.3 Pattern: Shared VPC and network-adjacent cross-project grants
 
 Shared VPC architectures (a **"host"** project owning the network, **"service"** projects attaching workloads to it) require specific cross-project roles independent of data-plane IAM – e.g., `roles/compute.networkUser` granted to service-project SAs/groups on the host project, so workloads in service projects can use host-project subnets. This is a useful reminder that **cross-project IAM isn't only a data-access concern** – network attachment, KMS key access (`roles/cloudkms.cryptoKeyEncrypterDecrypter` granted cross-project to a workload's SA so it can use a centrally-managed KMS key), and Secret Manager access (Module 12) all follow the identical cross-project role-binding mechanic.
+
+*Example:*
+```bash
+# Workload in project-A needs to encrypt data using a key in project-B (shared KMS)
+gcloud kms keys add-iam-policy-binding CRYPTO_KEY \
+  --keyring=KEYRING \
+  --location=global \
+  --project=project-b \
+  --member="serviceAccount:workload-sa@project-a.iam.gserviceaccount.com" \
+  --role="roles/cloudkms.cryptoKeyEncrypterDecrypter"
+
+# Verify:
+gcloud kms keys get-iam-policy CRYPTO_KEY \
+  --keyring=KEYRING \
+  --location=global \
+  --project=project-b
+```
 
 ### 9.4 Pattern: cross-organization (partner/vendor) access
 
@@ -1128,6 +1157,11 @@ protoPayload.serviceName="iam.googleapis.com"
 # Every IAM policy mutation – the highest-signal query for "who changed access"
 protoPayload.methodName="SetIamPolicy"
 
+# Service account disabled unexpectedly (possibly incident response, but verify)
+protoPayload.methodName="DisableServiceAccount"
+timestamp>="2026-06-15T00:00:00Z"
+NOT severity="ERROR"  # Filter out failed attempts
+
 # Impersonation chains: who is the *original* caller behind a service-acting-as-service event
 # (look at protoPayload.authenticationInfo.serviceAccountDelegationInfo –
 #  populated specifically for delegated/impersonated calls)
@@ -1222,6 +1256,14 @@ gcloud secrets versions access latest --secret="payments-db-password"
 ### 12.3 Pitfall: secrets *about* service accounts, stored insecurely
 
 Beyond keys, watch for SA-*adjacent* secrets handled carelessly: OAuth client secrets for SA-based OAuth flows in some legacy integrations, webhook signing secrets tied to a service identity, or impersonation target lists hardcoded in application config where they'd be better expressed as IAM bindings reviewable through the standard audit tooling from Module 11. The following general principle applies here: **anything that is itself a bearer secret belongs in Secret Manager (or KMS-wrapped storage) with its own access policy and rotation story – it should never piggyback on a service account's identity material as its distribution channel.**
+
+### 12.4 Secret Manager Patterns
+
+| Pattern | Pros | Cons | When to Use |
+| :--- | :--- | :--- | :--- |
+| **Pattern A**<br>Fetch once at startup | • Simple to implement<br>• Low latency during request handling | • Secret rotation requires a full restart<br>• Leaked secrets remain in memory until restart | • Secrets rarely change<br>• Acceptable to redeploy or restart for rotation |
+| **Pattern B**<br>Fetch on-demand per request | • Automatic secret rotation (always fetches the latest version) | • Higher latency per request<br>• Increased Secret Manager API quota usage<br>• Cascading failures if the secret manager goes down | • Secrets rotate frequently<br>• Latency is not a critical constraint |
+| **Pattern C**<br>Fetch at startup, refresh periodically | • Good balance between low latency and fresh rotation | • Requires background task management and in-memory caching<br><br>*Implementation:* Startup fetches immediately; a background task updates the cache hourly. | • **Recommended for most cases**<br>• Standard applications requiring both performance and security |
 
 ---
 
