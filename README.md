@@ -750,7 +750,7 @@ Some integration patterns – typically third-party SaaS products that only supp
 - **Set an organization policy enforcing maximum key age** so any key, once issued, becomes unusable after a bounded period even if nobody manually rotates it – this is a critical defense-in-depth control because manual rotation discipline reliably degrades over time across an organization.
 ```yaml
 # key-expiry-policy.yaml
-nname: organizations/YOUR_ORG_ID/policies/iam.serviceAccountKeyExpiryHours
+name: organizations/YOUR_ORG_ID/policies/iam.serviceAccountKeyExpiryHours
 spec:
   rules:
   - values:
