@@ -553,12 +553,35 @@ This is the **single most important structural fact about service accounts** and
 Engineers frequently conflate `serviceAccountUser` (attach-to-resource) with `serviceAccountTokenCreator` (mint-credentials-for). They are different permissions solving different problems and **both are independently dangerous in different ways** (Module 11 covers exactly how each becomes a privilege-escalation primitive).
 
 ### 5.3 Types of service accounts you'll encounter
+When working with GCP, you will encounter 3 distinct kinds of service accounts. Understanding who creates them, what they are used for, and how they are managed is essential for maintaining a secure, least-privilege environment.
 
-- **User-managed service accounts** – the ones you create explicitly. Email format: `SA_NAME@PROJECT_ID.iam.gserviceaccount.com`. Up to 100 characters total, name portion 6–30 characters, lowercase alphanumeric and hyphens.
-- **Default service accounts**, created automatically when you enable certain APIs:
-  - Compute Engine default SA – `PROJECT_NUMBER-compute@developer.gserviceaccount.com`, historically granted `roles/editor` on the project by default (a long-standing point of criticism; current console flows nudge you to remove this or use a scoped SA instead, but legacy projects often still carry it).
-  - App Engine default SA – `PROJECT_ID@appspot.gserviceaccount.com`.
-- **Google-managed service agents** – created and used internally by Google services to perform actions on your behalf (e.g., GKE's service agent managing load balancers, Cloud Build's service agent). Format: `service-PROJECT_NUMBER@gcp-sa-SERVICENAME.iam.gserviceaccount.com`. You generally should not delete or heavily restrict these without understanding exactly what breaks – many managed services silently rely on their service agent retaining specific roles.
+- **User-managed service accounts**: Service accounts you create explicitly for your workloads.
+  - Email format: `SA_NAME@PROJECT_ID.iam.gserviceaccount.com`.
+  - Naming constraints: up to 100 characters total, with the name portion limited to 6–30 characters and using lowercase alphanumerics and hyphens.
+- **Default service accounts**: Created automatically by GCP when you enable certain APIs.
+  - Compute Engine default service account – `PROJECT_NUMBER-compute@developer.gserviceaccount.com`, historically granted `roles/editor` on the project by default (a long-standing point of criticism; current console flows encourage you to remove this or use a scoped service account instead, but legacy projects often still carry it).
+  - App Engine default service account – `PROJECT_ID@appspot.gserviceaccount.com`.
+- **Google-managed service agents**: Accounts created and used by Google services to perform actions on your behalf (for example, GKE's service agent managing load balancers or Cloud Build's service agent pulling source code).
+  - Email format: `service-PROJECT_NUMBER@gcp-sa-SERVICENAME.iam.gserviceaccount.com`.
+  - You generally should not delete or heavily restrict these service agents without understanding exactly what will break. Many managed services rely on their service-agent identities retaining specific IAM roles.
+
+### 5.3.1 Google-managed service agent example: Cloud Run Service Agent
+To understand how Google-managed service agents operate, consider the service account used by Cloud Run to manage your workloads behind the scenes. The primary Google-managed service account for Cloud Run is the `Cloud Run Service Agent`. Its email identity is:
+`service-PROJECT_NUMBER@gcp-sa-run.iam.gserviceaccount.com`
+
+- **Lifecycle and visibility:** This account is created automatically by Google when you enable the Cloud Run API. Google-managed service agents are hidden from the standard *Service Accounts* page by default, and you cannot directly download their private JSON keys.
+- **Service agent vs. user-managed service account:** A user-managed service account is typically assigned directly to your Cloud Run container so your application code can access databases or external APIs. By contrast, a Google-managed service agent is used by the Cloud Run platform itself to orchestrate the underlying infrastructure.
+
+Imagine you have packaged a web app into a Docker image and pushed it to Artifact Registry.
+1. **Deployment:** You run `gcloud run deploy` to host the app on Cloud Run.
+2. **Infrastructure need:** Cloud Run must securely pull the container image from Artifact Registry, provision the runtime, and configure networking.
+3. **Service agent role:** Google automatically invokes the Cloud Run Service Agent to handle this operational work.
+4. **Permissions:** Because Google manages this account, the platform grants it the Cloud Run Service Agent role (`roles/run.serviceAgent`). This gives the backend the IAM permissions it needs to:
+   - Read and pull your container image from Artifact Registry.
+   - Allocate routing and ingress rules for incoming traffic.
+   - Stream runtime logs into Cloud Logging.
+
+Without this Google-managed service account, you would need to create and manage accounts, rotate keys, and map permissions yourself just to let Google's internal services communicate securely.
 
 ### 5.4 Lifecycle, precisely
 
