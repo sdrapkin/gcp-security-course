@@ -891,6 +891,68 @@ gcloud storage ls gs://my-bucket --impersonate-service-account=ingest-pipeline-s
 
 This is the recommended replacement for "download a key so I can test locally" in essentially every case – the human's own authentication (likely already MFA-protected) is the proof, every impersonation call is individually logged with the human's identity *and* the target SA visible (Module 11), and there is no file to forget to delete from a laptop.
 
+### 8.5.1 Pattern: Multiple independent workloads on a single VM with distinct permissions
+
+A common architectural question: a single VM needs to run multiple independent applications, each requiring its own distinct set of permissions (e.g., app-1 needs access to GCS bucket-A, app-2 needs access to BigQuery dataset-B). Attaching a single broadly-privileged SA to the VM violates least-privilege, since each app can potentially access every permission the VM's SA holds.
+
+The solution uses **impersonation to implement app-level permission isolation on a single host**:
+
+1. **Create app-specific service accounts** with custom, app-specific roles limiting each to exactly what it needs:
+   ```bash
+   # Create app-1 SA with read-only access to bucket-A
+   gcloud iam service-accounts create app-1-sa --display-name="App 1 Service Account"
+   gcloud storage buckets add-iam-policy-binding gs://bucket-a \
+     --member="serviceAccount:app-1-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+     --role="roles/storage.objectViewer"
+   
+   # Create app-2 SA with read-only access to dataset-B
+   gcloud iam service-accounts create app-2-sa --display-name="App 2 Service Account"
+   gcloud bigquery datasets add-iam-policy-binding dataset-b \
+     --member="serviceAccount:app-2-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+     --role="roles/bigquery.dataViewer"
+   ```
+
+2. **Create a minimally-privileged VM host service account**, with just enough permissions for the VM to run (e.g., basic logging, basic monitoring):
+   ```bash
+   gcloud iam service-accounts create vm-host-sa --display-name="VM Host Service Account"
+   
+   # Attach the VM-host SA to the VM (using --service-account in gcloud compute instances create/update)
+   ```
+
+3. **Bind each app-specific SA to the VM-host SA with `serviceAccountTokenCreator`**, allowing the VM to impersonate each app's identity:
+   ```bash
+   gcloud iam service-accounts add-iam-policy-binding \
+       app-1-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+       --member="serviceAccount:vm-host-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+       --role="roles/iam.serviceAccountTokenCreator"
+   
+   gcloud iam service-accounts add-iam-policy-binding \
+       app-2-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com \
+       --member="serviceAccount:vm-host-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+       --role="roles/iam.serviceAccountTokenCreator"
+   ```
+
+4. **In each application's code, impersonate the appropriate app-specific SA** at startup or on-demand via the IAM Credentials API or gcloud CLI:
+   ```bash
+   # App-1's startup script: impersonate app-1-sa and use its token
+   gcloud auth application-default login \
+     --impersonate-service-account=app-1-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com
+   
+   # Alternatively, programmatically via the IAM Credentials API:
+   # curl -X POST \
+   #   https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/app-1-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com:generateAccessToken \
+   #   -H "Authorization: Bearer $(gcloud auth print-access-token)"
+   ```
+
+**Why this pattern works:**
+
+- **Minimal VM-host SA**: The VM itself holds a low-privilege identity used solely for obtaining (impersonating) app-specific credentials. Even if an attacker gains shell access to the VM, they cannot directly access app-2's data through the VM-host SA – they must then compromise app-2's SA credentials or code.
+- **App-level access isolation**: Each application can only access resources its own SA is granted, even though all apps run on the same physical host with the same user account.
+- **Audit clarity**: Audit logs show which app (which SA) accessed which resource, not just "the VM-host SA accessed everything."
+- **Keyless at every layer**: Neither the VM-host SA nor the app-specific SAs need JSON keys. The VM obtains tokens via attached identity (Mechanism 1, Module 6.2), and each app obtains its tokens via impersonation using the VM-host SA's already-established identity.
+
+This pattern is a middle ground between "one overprivileged SA per VM" (violates least-privilege) and "one VM per app" (operationally expensive), and is particularly valuable in cost-conscious or legacy environments where VM consolidation is necessary without sacrificing isolation.
+
 ### 8.6 Common pitfalls
 
 - **Granting `serviceAccountUser` at the project level** (`roles/iam.serviceAccountUser` bound on the *project* resource) instead of on the specific target SA – this grants `actAs` over **every current and future SA in the project**, not just the one intended. Always bind these roles on the SA resource itself unless you have a deliberate, documented reason to grant it broadly.
