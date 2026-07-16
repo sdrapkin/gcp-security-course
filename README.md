@@ -893,7 +893,8 @@ This is the recommended replacement for "download a key so I can test locally" i
 
 ### 8.5.1 Pattern: Multiple independent workloads on a single VM with distinct permissions
 
-A common architectural question: a single VM needs to run multiple independent applications, each requiring its own distinct set of permissions (e.g., app-1 needs access to GCS bucket-A, app-2 needs access to BigQuery dataset-B). Attaching a single broadly-privileged SA to the VM violates least-privilege, since each app can potentially access every permission the VM's SA holds.
+A common architectural question:
+- A single VM needs to run multiple independent applications, each requiring its own distinct set of permissions (e.g., `app-1` needs access to GCS `bucket-A`, `app-2` needs access to BigQuery `dataset-B`). Attaching a single broadly-privileged SA to the VM violates least-privilege, since each app can potentially access every permission the VM's SA holds.
 
 The solution uses **impersonation to implement app-level permission isolation on a single host**:
 
@@ -919,7 +920,7 @@ The solution uses **impersonation to implement app-level permission isolation on
    # Attach the VM-host SA to the VM (using --service-account in gcloud compute instances create/update)
    ```
 
-3. **Bind each app-specific SA to the VM-host SA with `serviceAccountTokenCreator`**, allowing the VM to impersonate each app's identity:
+3. **Bind each app-specific SA to the VM-host SA with `serviceAccountTokenCreator`** Role, allowing the VM to impersonate each app's identity:
    ```bash
    gcloud iam service-accounts add-iam-policy-binding \
        app-1-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com \
@@ -944,14 +945,15 @@ The solution uses **impersonation to implement app-level permission isolation on
    #   -H "Authorization: Bearer $(gcloud auth print-access-token)"
    ```
 
-**Why this pattern works:**
+**What this pattern actually achieves (and its trade-offs):**
 
-- **Minimal VM-host SA**: The VM itself holds a low-privilege identity used solely for obtaining (impersonating) app-specific credentials. Even if an attacker gains shell access to the VM, they cannot directly access app-2's data through the VM-host SA – they must then compromise app-2's SA credentials or code.
-- **App-level access isolation**: Each application can only access resources its own SA is granted, even though all apps run on the same physical host with the same user account.
-- **Audit clarity**: Audit logs show which app (which SA) accessed which resource, not just "the VM-host SA accessed everything."
-- **Keyless at every layer**: Neither the VM-host SA nor the app-specific SAs need JSON keys. The VM obtains tokens via attached identity (Mechanism 1, Module 6.2), and each app obtains its tokens via impersonation using the VM-host SA's already-established identity.
+- **Keyless at every layer**: Neither the VM-host SA nor the app-specific SAs require JSON keys to be stored on disk. The VM obtains its base token via the metadata server, and each app uses Google's IAM APIs to dynamically exchange that base token for short-lived, impersonated app-specific tokens.
+- **Granular logical identity**: Each application uses its own targeted service account for GCP API calls. `App-1` only requests tokens for `app-1-sa`, and `App-2` only requests tokens for `app-2-sa`, preventing "privilege creep" in the application code itself.
+- **Improved audit traceability**: Cloud Audit Logs capture both the target identity (`principalEmail` shows the app SA) and the delegation trail (`serviceAccountDelegationInfo` shows the VM-host SA). This makes it easy to trace which app performed an action, rather than just seeing "the VM did it."
+- **No static credential leak**: Because there are no JSON keys saved on the VM's filesystem, a snapshot leak or a compromised backup won't expose long-lived credentials to the outside world.
 
-This pattern is a middle ground between "one overprivileged SA per VM" (violates least-privilege) and "one VM per app" (operationally expensive), and is particularly valuable in cost-conscious or legacy environments where VM consolidation is necessary without sacrificing isolation.
+**The Critical Security Trade-off:**
+While this pattern is a great keyless middle ground for cost-conscious environments consolidating workloads onto a single VM, **it does not provide hard security isolation**. Because the VM-host SA has permission to impersonate both app-specific SAs, anyone who obtains shell access or achieves Remote Code Execution (RCE) on the VM can instantly query the metadata server and impersonate *either* application. This pattern should only be used if you trust both applications to share a single security blast radius.
 
 ### 8.6 Common pitfalls
 
