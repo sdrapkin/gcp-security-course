@@ -1505,7 +1505,14 @@ The unifying lesson across all these cases: **the service account layer is not a
 
 You're designing IAM for a platform with: a public-facing API on Cloud Run, a background job pipeline on GKE, a nightly BigQuery ETL job, a CI/CD pipeline on GitHub Actions, and a third-party fraud-detection SaaS that needs read access to a subset of transaction data and only supports static API-key-style auth (no OIDC/SAML support on their end). Work through, on paper, before checking the suggested approach below: how many service accounts you'd create and why; which of them ever hold a key, and how that key is protected; the exact role bound to the CI pipeline's federated identity, and whether it's `serviceAccountUser` or `serviceAccountTokenCreator` on which targets; how you'd detect, within minutes, if the third-party SaaS's credential were used from anywhere other than their documented IP range.
 
-**Suggested approach:** Five SAs – `api-gsa` (Cloud Run, attached identity, no key, scoped to its own dataset/cache only), `worker-gsa` (GKE Workload Identity, no key, scoped to the job queue and its output bucket only), `etl-gsa` (BigQuery job, attached identity via Dataflow/Composer, no key, scoped per Module 13.3's three-tier pattern), `ci-deployer-gsa` (federated via GitHub WIF per Module 10.3, holds `serviceAccountUser` – not `tokenCreator` – on `api-gsa` and `worker-gsa` only, with an attribute condition locked to the `main` branch of the specific deploy repos), and `fraud-saas-gsa` (the one SA in the system holding a JSON key, granted only `bigquery.dataViewer` scoped by condition to a single redacted view rather than the base transactions table, key stored in Secret Manager, org policy enforcing a short max key age, and a standing log-based alert on any `iamcredentials`/BigQuery access from this SA originating outside the vendor's published egress ranges). Every other SA in the system has zero keys and is reachable only through attached identity or WIF.
+**Suggested approach:** Five SAs:
+1. `api-gsa` (Cloud Run, attached identity, no key, scoped to its own dataset/cache only)
+2. `worker-gsa` (GKE Workload Identity, no key, scoped to the job queue and its output bucket only)
+3. `etl-gsa` (BigQuery job, attached identity via Dataflow/Composer, no key, scoped per Module 13.3's three-tier pattern)
+4. `ci-deployer-gsa` (federated via GitHub WIF per Module 10.3, holds `serviceAccountUser` – not `tokenCreator` – on `api-gsa` and `worker-gsa` only, with an attribute condition locked to the `main` branch of the specific deploy repos)
+5. `fraud-saas-gsa` (the one SA in the system holding a JSON key, granted only `bigquery.dataViewer` scoped by condition to a single redacted view rather than the base transactions table, key stored in Secret Manager, org policy enforcing a short max key age, and a standing log-based alert on any `iamcredentials`/BigQuery access from this SA originating outside the vendor's published egress ranges).
+
+Every other SA in the system has zero keys and is reachable only through attached identity or WIF.
 
 ### 14.2 Troubleshooting workflow (practice this until it's reflexive)
 
