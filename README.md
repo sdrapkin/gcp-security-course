@@ -278,7 +278,7 @@ A **role** is a named, versioned bundle of **permissions**. A permission has the
 
 ### 2.2 Basic roles (legacy)
 
-`roles/owner`, `roles/editor`, `roles/viewer` (plus `roles/browser`). These predate the predefined-role system and grant **thousands of permissions across nearly every service in the project**, including, critically, `roles/editor` granting the ability to act as most service accounts in many configurations and to modify nearly all resources. They are project-wide, blunt, and **explicitly discouraged by Google for production use** – they remain mostly for backward compatibility and quick prototyping. **The most consequential mistake new GCP teams make is leaving humans or, worse, service accounts bound to `roles/editor` because it "just works."** A service account with `roles/editor` is functionally close to a master key for the entire project.
+`roles/owner`, `roles/editor`, `roles/viewer` (plus `roles/browser`). These predate the predefined-role system and grant **thousands of permissions across nearly every service in the project**, including, critically, `roles/editor` granting the ability to act as most service accounts in many configurations and to modify nearly all resources. They are project-wide, blunt, and **explicitly discouraged by Google for production use** – they remain mostly for backward compatibility and quick prototyping. **The most consequential mistake new GCP teams make is leaving humans or, worse, service accounts bound to `roles/editor` because it "just works."** A service account with `roles/editor` is functionally close to a project-wide administrator role for the entire project.
 
 ### 2.3 Predefined roles
 
@@ -520,6 +520,24 @@ Conditions only gate **whether a binding applies**; they cannot express things l
 - **Conditional grants that "don't work"** are very often a `--policy-version=3` omission (Module 3.1) rather than a CEL syntax error.
 - **Relying on a time-boxed condition as your *only* control for temporary access**, with no follow-up process to actually remove the binding or verify it expired as intended – expired conditions stop granting access but the binding entry remains in the policy until explicitly deleted, which clutters audits and can mislead a reviewer scanning bindings without checking each condition.
 - **Writing deny rules against v1-style permission strings** (`compute.instances.delete` instead of `compute.googleapis.com/instances.delete`) – these silently fail to match anything, giving a false sense of protection.
+
+### 4.5 Modern Google Cloud authorization control landscape
+
+- **Allow Policy:** Grants permissions; does not handle explicit denials or resource boundary restrictions.
+- **Deny Policy:** Overrides `allow` grants to explicitly block specific permissions/principals.
+- **Principal Access Boundary (PAB):** Evaluated before `deny`/`allow` policies (Step 3 in the evaluation engine) to restrict which resources a principal's credentials can interact with, without granting any permissions itself.
+- **Org Policy:** Operates at the resource governance plane via constraints (e.g., restricting public IPs or allowed policy domains) rather than granting IAM permissions.
+- **VPC Service Controls:** Establishes network/API perimeters around resources to prevent unauthorized data movement regardless of IAM `allow` grants.
+- **Access Context Manager:** Defines contextual attributes (IP ranges, device posture, user location) evaluated by VPC-SC or IAM conditions.
+
+| Control | Grants Access | Explicitly Denies | Restricts Reachable Resources | Primary Scope |
+| :--- | :--- | :--- | :--- | :--- |
+| **Allow Policy** | Yes | No | No | IAM Permissions |
+| **Deny Policy** | No | Yes | No | IAM Permissions |
+| **Principal Access Boundary (PAB)** | No | No (Implicit Deny) | Yes (Limits Principal Scope) | IAM Principal Scope |
+| **Org Policy** | No | Indirectly (Constraints) | Sometimes (Location/Domain) | Resource Governance |
+| **VPC Service Controls** | No | Indirectly (Perimeter Block) | Yes (Limits API Perimeter) | Data Perimeter |
+| **Access Context Manager** | No | No | Contextual Gating (IP/Device/Attributes) | Zero-Trust / Context-Aware Access |
 
 ---
 
