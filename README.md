@@ -230,11 +230,14 @@ Important consequences that engineers routinely get wrong:
 
 ### 1.3 Propagation latency
 
-IAM is a globally distributed system, not a single transactional database. After a `setIamPolicy` call succeeds, the change is **strongly consistent for reads through the IAM API itself**, but **propagation to all the enforcement points across Google's infrastructure (caches in every regional/zonal service backend) is eventually consistent**, with Google's [documented guidance](https://docs.cloud.google.com/iam/docs/access-change-propagation) being to expect **up to ~7 minutes**, occasionally longer under load, before a policy change is reflected everywhere a permission check happens. Operational implications:
+IAM is a globally distributed system, not a single transactional database. After a `setIamPolicy` call succeeds, policy updates are **eventually consistent across both the IAM API itself (`getIamPolicy`) and enforcement points worldwide.** Google's [documented guidance](https://docs.cloud.google.com/iam/docs/access-change-propagation) is to expect **up to ~7 minutes** (occasionally longer under load) before a policy change is reflected everywhere a permission check happens. 
 
-- Automation that does `grant role → immediately call API requiring that role` should retry with backoff, not assume instant effect.
-- Revoking access (e.g., during incident response) should not be assumed instantaneous either – pair IAM revocation with key/credential invalidation and, for sensitive cases, disabling the principal outright.
-- This is also why **Cloud Console "Test changes"/Policy Simulator and Policy Troubleshooter** evaluate based on the *currently committed* policy, not a hypothetically-propagated one – useful for design-time verification, not real-time incident timing.
+Operational implications:
+
+- **Automation Lags**: Workflows executing `setIamPolicy` followed immediately by `getIamPolicy` or an API call requiring those permissions should retry with exponential backoff until the expected state propagates.
+- **Optimistic Locking**: Always pass the `etag` from a recent `getIamPolicy` call into `setIamPolicy` requests to prevent concurrent writes from stomping on each other during read-after-write lags.
+- **Access Revocation**: Incident response actions like revoking permissions are not instantaneous; pair IAM policy removals with credential invalidation or account disabling for immediate containment.
+- **Troubleshooting Tools**: The Cloud Console Policy Simulator and Policy Troubleshooter evaluate policies based on currently committed data plane states, not real-time propagating writes.
 
 ### 1.4 `gcloud`: walking the hierarchy
 
