@@ -521,24 +521,48 @@ Conditions only gate **whether a binding applies**; they cannot express things l
 - **Relying on a time-boxed condition as your *only* control for temporary access**, with no follow-up process to actually remove the binding or verify it expired as intended – expired conditions stop granting access but the binding entry remains in the policy until explicitly deleted, which clutters audits and can mislead a reviewer scanning bindings without checking each condition.
 - **Writing deny rules against v1-style permission strings** (`compute.instances.delete` instead of `compute.googleapis.com/instances.delete`) – these silently fail to match anything, giving a false sense of protection.
 
-### 4.5 Modern Google Cloud authorization control landscape
+### 4.5 Modern Google Cloud access control landscape
+
+```
+Google Cloud Access Control:
+
+IAM
+├─ Allow Policies
+├─ Deny Policies
+└─ Principal Access Boundaries (PAB)
+
+Context-Aware Access
+└─ Access Context Manager (Access Levels)
+
+Data Perimeter Security
+└─ VPC Service Controls (Service-API Perimeter Security)
+
+Governance
+└─ Organization Policy
+
+Network Enforcement
+└─ Firewall Policies
+```
+
+These controls operate in different enforcement planes and are complementary rather than hierarchical. A request may need to satisfy multiple controls simultaneously (for example IAM, Org Policy, and VPC Service Controls).
 
 - **Allow Policy:** Grants permissions; does not handle explicit denials or resource boundary restrictions.
-- **Deny Policy:** Overrides `allow` grants to explicitly block specific permissions/principals.
-- **Principal Access Boundary (PAB):** Evaluated before `deny`/`allow` policies (Step 3 in the evaluation engine) to restrict which resources a principal's credentials can interact with, without granting any permissions itself.
-- **Org Policy:** Operates at the resource governance plane via constraints (e.g., restricting public IPs or allowed policy domains) rather than granting IAM permissions.
-- **VPC Service Controls:** Establishes network/API perimeters around resources to prevent unauthorized data movement regardless of IAM `allow` grants.
-- **Access Context Manager:** Defines contextual attributes (IP ranges, device posture, user location) evaluated by VPC-SC or IAM conditions.
+- **Deny Policy:** Explicitly blocks specific permissions/principals, taking precedence over any matching `allow` grants.
+- **Principal Access Boundary (PAB):** Evaluated before `deny`/`allow` policies (Step 3 in the evaluation flow) to restrict which resources a principal's credentials can interact with, without granting any permissions itself.
+- **Org Policy:** Operates at the resource governance plane via constraints (e.g. restricting public IPs, enforcing CMEK usage, limiting resource locations) rather than granting IAM permissions.
+- **VPC Service Controls:** Establishes service perimeters that restrict API access and prevent data movement/exfiltration even when IAM permissions would otherwise allow access.
+- **Access Context Manager:** Defines Access Levels that can be referenced by VPC Service Controls, IAM Conditions, IAP, and BeyondCorp to enable context-aware access decisions based on attributes such as network location and device posture.
+- **Firewall Policies:** Enforces network-level (L3/L4) ingress/egress filtering at the IP/port/protocol layers before requests reach API or IAM evaluation planes.
 
 | Control | Grants Access | Explicitly Denies | Restricts Reachable Resources | Primary Scope |
 | :--- | :--- | :--- | :--- | :--- |
 | **Allow Policy** | Yes | No | No | IAM Permissions |
 | **Deny Policy** | No | Yes | No | IAM Permissions |
 | **Principal Access Boundary (PAB)** | No | No (Implicit Deny) | Yes (Limits Principal Scope) | IAM Principal Scope |
-| **Org Policy** | No | Indirectly (Constraints) | Sometimes (Location/Domain) | Resource Governance |
+| **Org Policy** | No | Indirectly (Constraints) | Sometimes (e.g. Location/Service) | Resource Governance |
 | **VPC Service Controls** | No | Indirectly (Perimeter Block) | Yes (Limits API Perimeter) | Data Perimeter |
-| **Access Context Manager** | No | No | Contextual Gating (IP/Device/Attributes) | Zero-Trust / Context-Aware Access |
-
+| **Access Context Manager** | No | No | Contextual Gating (IP/Device/Attributes) provides context used by other controls (ACM itself does not enforce) | Zero-Trust / Context-Aware Access |
+| **Firewall Policies** | No (Allows Traffic) | Yes | Yes (Limits Network Reachability) | Network Layer (L3/L4) |
 ---
 
 # Part II – Service Accounts
