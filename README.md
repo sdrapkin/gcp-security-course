@@ -2,9 +2,10 @@
 ## By Stan Drapkin [2026 June]
 ### Professional Google Cloud Training Curriculum for Engineers
 
-* **Format:** Self-paced or instructor-delivered technical course
-* **Audience:** Software/platform/security engineers with basic cloud literacy (you know what a project, VM, and API key are). No prior Google Cloud IAM-specific knowledge assumed.
-* **Tooling used:** `gcloud` CLI, IAM REST API (`v1`/`v2`/`v3`), Cloud Console, Cloud Audit Logs, Policy Analyzer/Troubleshooter
+* **Purpose:** Production-grade training curriculum bridging the gap between Google Cloud architecture theory and real-world security engineering.
+* **Format:** Self-paced or instructor-delivered technical course.
+* **Audience:** Software, platform, and security engineers with basic cloud literacy (familiar with projects, VMs, and API keys). No prior GCP IAM knowledge required.
+* **Tools Used:** `gcloud` CLI, IAM REST API (`v1`/`v2`/`v3`), Cloud Console, Cloud Audit Logs, Policy Analyzer/Troubleshooter.
 
 ---
 
